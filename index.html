@@ -637,11 +637,9 @@ const defaultState = {
     { id: 'p36', name: 'Pompa P.36' },
     { id: 'p40', name: 'Pompa P.40' },
   ],
-  salespeople: [
-    { id: 's1', name: 'Tomasz Wiśniewski' },
-    { id: 's2', name: 'Katarzyna Lewandowska' },
-    { id: 's3', name: 'Jakub Wójcik' },
-  ],
+  // Lista sprzedawców = lista użytkowników (state.users). Sprzedawca w zamówieniu
+  // to ID użytkownika (salespersonId wskazuje na user.id). Nie trzymamy
+  // osobnej listy.
   settings: {
     transportPricePerKm: 5,   // zgodnie z ofertą: 5 zł/km
     transportRoundTrip: true, // transport liczony w 2 strony
@@ -744,7 +742,7 @@ function esc(s) {
 // ---------- UI state ----------
 const ui = {
   view: 'orders',          // orders | new | offer | admin
-  adminTab: 'contractors', // contractors | types | zones | salespeople | users | files | settings
+  adminTab: 'contractors', // contractors | types | zones | users | files | settings
   offerTab: 'offer',       // offer | template
   notifOpen: false,
   modal: null,
@@ -776,7 +774,8 @@ function blankOrderForm() {
     additionalServices: '',
 
     // Sprzedawca i nadpisania cen
-    salespersonId: '',
+    // Domyślnie sprzedawca = zalogowany użytkownik. Admin może podmienić w formularzu.
+    salespersonId: state.session ? state.session.userId : '',
     pricePerM3Override: '',
     pricePerKmOverride: '',
 
@@ -1309,12 +1308,12 @@ function renderNewOrder() {
             <div class="field-row">
               <div class="field">
                 <label class="field-label">Kto sprzedał</label>
-                <select class="field-select" id="f-salesperson">
-                  <option value="">— wybierz —</option>
-                  ${state.salespeople.map(s => `
-                    <option value="${s.id}" ${ui.formData.salespersonId===s.id?'selected':''}>${esc(s.name)}</option>
+                <select class="field-select" id="f-salesperson" ${currentUser().role !== 'admin' ? 'disabled' : ''}>
+                  ${state.users.map(u => `
+                    <option value="${u.id}" ${ui.formData.salespersonId===u.id?'selected':''}>${esc(u.name)}${u.role==='admin'?' (admin)':''}</option>
                   `).join('')}
                 </select>
+                ${currentUser().role !== 'admin' ? '<div class="field-hint">Sprzedawcą jest osoba tworząca zamówienie. Tylko administrator może to zmienić.</div>' : '<div class="field-hint">Administrator może podmienić sprzedawcę (np. w imieniu pracownika).</div>'}
               </div>
               <div class="field">
                 <label class="field-label">Nr oferty cenowej</label>
@@ -1390,20 +1389,26 @@ function renderNewOrder() {
 
 // ----- Orders list -----
 function renderOrdersList() {
-  if (state.orders.length === 0) {
+  const u = currentUser();
+  const isAdmin = u.role === 'admin';
+  // Pracownik widzi zamówienia, które stworzył ALBO w których jest sprzedawcą.
+  // Admin widzi wszystkie.
+  const visibleOrders = isAdmin
+    ? state.orders
+    : state.orders.filter(o => o.createdBy === u.id || o.salespersonId === u.id);
+
+  if (visibleOrders.length === 0) {
     return `
       <div class="panel">
         <div class="empty-state">
           <div class="empty-state-icon">📋</div>
-          <div class="empty-state-title">Brak zamówień</div>
-          <div class="empty-state-text">Utwórz pierwsze zamówienie, klikając "Nowe zamówienie".</div>
+          <div class="empty-state-title">${state.orders.length === 0 ? 'Brak zamówień' : 'Brak Twoich zamówień'}</div>
+          <div class="empty-state-text">${state.orders.length === 0 ? 'Utwórz pierwsze zamówienie, klikając „Nowe zamówienie".' : 'Widzisz tutaj tylko zamówienia, które utworzyłeś lub w których jesteś sprzedawcą.'}</div>
         </div>
       </div>
     `;
   }
-  const u = currentUser();
-  const isAdmin = u.role === 'admin';
-  const sorted = [...state.orders].sort((a,b) => b.ts - a.ts);
+  const sorted = [...visibleOrders].sort((a,b) => b.ts - a.ts);
 
   return `
     <div class="panel">
@@ -1417,7 +1422,7 @@ function renderOrdersList() {
               <th>Typ</th>
               <th>m³</th>
               <th>Sprzedawca</th>
-              <th>Utworzył</th>
+              ${isAdmin ? '<th>Utworzył</th>' : ''}
               <th>Cena końcowa</th>
               <th>Status</th>
               ${isAdmin ? '<th></th>' : ''}
@@ -1435,7 +1440,7 @@ function renderOrdersList() {
 function renderOrderRow(o, isAdmin) {
   const contractor = state.contractors.find(c => c.id === o.contractorId)?.name || '—';
   const type = state.concreteTypes.find(t => t.id === o.concreteTypeId)?.name || '—';
-  const sp = state.salespeople.find(s => s.id === o.salespersonId)?.name || '—';
+  const sp = state.users.find(u => u.id === o.salespersonId)?.name || '—';
   const creator = state.users.find(u => u.id === o.createdBy)?.name || '—';
   return `
     <tr data-order-id="${o.id}" class="row-clickable">
@@ -1445,7 +1450,7 @@ function renderOrderRow(o, isAdmin) {
       <td data-label="Typ">${esc(type)}</td>
       <td data-label="m³">${fmt(o.volume)}</td>
       <td data-label="Sprzedawca">${esc(sp)}</td>
-      <td data-label="Utworzył">${esc(creator)}</td>
+      ${isAdmin ? `<td data-label="Utworzył">${esc(creator)}</td>` : ''}
       <td data-label="Cena końcowa" class="td-money">${fmtMoney(o.grandTotal)}</td>
       <td data-label="Status">${statusBadge(o.status)}</td>
       ${isAdmin ? `
@@ -1487,7 +1492,6 @@ function renderAdmin() {
       <button class="tab ${ui.adminTab==='contractors'?'active':''}" data-tab="contractors">Kontrahenci</button>
       <button class="tab ${ui.adminTab==='types'?'active':''}" data-tab="types">Typy betonu</button>
       <button class="tab ${ui.adminTab==='zones'?'active':''}" data-tab="zones">Strefy</button>
-      <button class="tab ${ui.adminTab==='salespeople'?'active':''}" data-tab="salespeople">Sprzedawcy</button>
       <button class="tab ${ui.adminTab==='users'?'active':''}" data-tab="users">Użytkownicy</button>
       <button class="tab ${ui.adminTab==='files'?'active':''}" data-tab="files">Pliki / oferta</button>
       <button class="tab ${ui.adminTab==='settings'?'active':''}" data-tab="settings">Ustawienia</button>
@@ -1496,7 +1500,6 @@ function renderAdmin() {
     ${ui.adminTab === 'contractors' ? renderAdminContractors() : ''}
     ${ui.adminTab === 'types' ? renderAdminTypes() : ''}
     ${ui.adminTab === 'zones' ? renderAdminZones() : ''}
-    ${ui.adminTab === 'salespeople' ? renderAdminSalespeople() : ''}
     ${ui.adminTab === 'users' ? renderAdminUsers() : ''}
     ${ui.adminTab === 'files' ? renderAdminFiles() : ''}
     ${ui.adminTab === 'settings' ? renderAdminSettings() : ''}
@@ -1682,36 +1685,6 @@ function renderAdminFiles() {
             </label>
           `}
         </div>
-      </div>
-    </div>
-  `;
-}
-
-function renderAdminSalespeople() {
-  return `
-    <div class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">Sprzedawcy</h2>
-        <div class="panel-actions">
-          <button class="btn btn-primary btn-sm" id="addSalespersonBtn">${icon('plus')} Dodaj</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Imię i nazwisko</th><th></th></tr></thead>
-          <tbody>
-            ${state.salespeople.length === 0 ? '<tr><td colspan="2" class="empty-state-text" style="text-align:center; padding: 24px;">Brak sprzedawców.</td></tr>' : ''}
-            ${state.salespeople.map(s => `
-              <tr>
-                <td data-label="Imię i nazwisko">${esc(s.name)}</td>
-                <td class="td-actions">
-                  <button class="btn btn-sm btn-ghost" data-edit-salesperson="${s.id}">Edytuj</button>
-                  <button class="btn btn-sm btn-danger" data-del-salesperson="${s.id}">Usuń</button>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
       </div>
     </div>
   `;
@@ -2199,10 +2172,15 @@ function bindOrdersList() {
 function openOrderDetails(orderId) {
   const o = state.orders.find(x => x.id === orderId);
   if (!o) return;
+  // Pracownik widzi tylko swoje zamówienia
+  const u = currentUser();
+  if (u.role !== 'admin' && o.createdBy !== u.id && o.salespersonId !== u.id) {
+    return; // brak dostępu - po cichu pomijamy
+  }
   const contractorObj = state.contractors.find(c => c.id === o.contractorId);
   const contractor = contractorObj?.name || '—';
   const type = state.concreteTypes.find(t => t.id === o.concreteTypeId)?.name || '—';
-  const sp = state.salespeople.find(s => s.id === o.salespersonId)?.name || '—';
+  const sp = state.users.find(u => u.id === o.salespersonId)?.name || '—';
   const creator = state.users.find(u => u.id === o.createdBy)?.name || '—';
   const zone = state.zones.find(z => z.id === o.zoneId)?.name || '—';
   const pump = state.pumpTypes.find(p => p.id === o.pumpId)?.name || '';
@@ -2326,15 +2304,6 @@ function bindAdmin() {
     state.concreteTypes.forEach(t => {
       if (t.pricesByZone) delete t.pricesByZone[b.dataset.delZone];
     });
-    saveState(); render();
-  }));
-
-  // Salespeople
-  document.getElementById('addSalespersonBtn')?.addEventListener('click', () => openSalespersonModal());
-  document.querySelectorAll('[data-edit-salesperson]').forEach(b => b.addEventListener('click', () => openSalespersonModal(b.dataset.editSalesperson)));
-  document.querySelectorAll('[data-del-salesperson]').forEach(b => b.addEventListener('click', () => {
-    if (!confirm('Usunąć tego sprzedawcę?')) return;
-    state.salespeople = state.salespeople.filter(s => s.id !== b.dataset.delSalesperson);
     saveState(); render();
   }));
 
@@ -2595,33 +2564,6 @@ function openZoneModal(id) {
   });
 }
 
-function openSalespersonModal(id) {
-  const existing = id ? state.salespeople.find(s => s.id === id) : null;
-  openModal({
-    title: existing ? 'Edytuj sprzedawcę' : 'Dodaj sprzedawcę',
-    body: `
-      <div class="field">
-        <label class="field-label">Imię i nazwisko</label>
-        <input class="field-input" id="m-s-name" value="${esc(existing?.name || '')}" placeholder="np. Jan Kowalski">
-      </div>
-    `,
-    footer: `
-      <button class="btn btn-secondary" data-modal-close>Anuluj</button>
-      <button class="btn btn-primary" id="m-s-save">${existing ? 'Zapisz' : 'Dodaj'}</button>
-    `,
-    onMount() {
-      document.getElementById('m-s-name').focus();
-      document.getElementById('m-s-save').addEventListener('click', () => {
-        const name = document.getElementById('m-s-name').value.trim();
-        if (!name) return alert('Podaj imię i nazwisko.');
-        if (existing) existing.name = name;
-        else state.salespeople.push({ id: uid('s'), name });
-        saveState(); closeModal();
-      });
-    }
-  });
-}
-
 function openUserModal(id) {
   const existing = id ? state.users.find(u => u.id === id) : null;
   openModal({
@@ -2684,7 +2626,7 @@ function generateOrderPdf(o) {
 
   const contractor = state.contractors.find(c => c.id === o.contractorId);
   const type = state.concreteTypes.find(t => t.id === o.concreteTypeId);
-  const sp = state.salespeople.find(s => s.id === o.salespersonId);
+  const sp = state.users.find(u => u.id === o.salespersonId);
   const zone = state.zones.find(z => z.id === o.zoneId);
   const pump = state.pumpTypes.find(p => p.id === o.pumpId);
   const company = state.settings.company || {};
